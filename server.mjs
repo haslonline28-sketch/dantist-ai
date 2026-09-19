@@ -8,7 +8,7 @@ const openai = new OpenAI({
   apiKey: process.env.OPENAI_API_KEY,
 });
 
-const PROMPT_ID = "pmpt_6aae2ebc9ae88190be922847c8059ca70e2c251001dfe637";
+const PROMPT_ID = "pmpt_6aae367cd5888195aafee0f4ab45190f05c44e3dc0d620aa";
 const GOOGLE_CALENDAR_TOKEN = process.env.GOOGLE_CALENDAR_OAUTH_ACCESS_TOKEN;
 
 if (!process.env.OPENAI_API_KEY) {
