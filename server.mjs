@@ -1,6 +1,5 @@
 import express from "express";
 import OpenAI from "openai";
-import crypto from "node:crypto";
 
 const app = express();
 const port = process.env.PORT || 3000;
@@ -12,141 +11,42 @@ const openai = new OpenAI({
 const PROMPT_ID =
   "pmpt_6aae367cd5888195aafee0f4ab45190f05c44e3dc0d620aa";
 
-const GOOGLE_CLIENT_ID = process.env.GOOGLE_CLIENT_ID;
-const GOOGLE_CLIENT_SECRET = process.env.GOOGLE_CLIENT_SECRET;
-const GOOGLE_REFRESH_TOKEN = process.env.GOOGLE_REFRESH_TOKEN;
+const GOOGLE_CLIENT_ID =
+  process.env.GOOGLE_CLIENT_ID;
 
-const REDIRECT_URI =
-  "https://dantist-ai.onrender.com/auth/google/callback";
+const GOOGLE_CLIENT_SECRET =
+  process.env.GOOGLE_CLIENT_SECRET;
 
-const GOOGLE_SCOPE =
-  "https://www.googleapis.com/auth/calendar.events";
+const GOOGLE_REFRESH_TOKEN =
+  process.env.GOOGLE_REFRESH_TOKEN;
 
-let oauthState = null;
 let cachedAccessToken = null;
 let accessTokenExpiresAt = 0;
 
 app.use(express.json());
 app.use(express.static("."));
 
-/* -----------------------------
-   GOOGLE OAUTH
------------------------------ */
-
-app.get("/auth/google", (req, res) => {
-  oauthState = crypto.randomBytes(24).toString("hex");
-
-  const params = new URLSearchParams({
-    client_id: GOOGLE_CLIENT_ID,
-    redirect_uri: REDIRECT_URI,
-    response_type: "code",
-    access_type: "offline",
-    prompt: "consent",
-    include_granted_scopes: "true",
-    scope: GOOGLE_SCOPE,
-    state: oauthState,
-  });
-
-  res.redirect(
-    "https://accounts.google.com/o/oauth2/v2/auth?" +
-      params.toString()
-  );
-});
-
-app.get("/auth/google/callback", async (req, res) => {
-  try {
-    const { code, state } = req.query;
-
-    if (!code || state !== oauthState) {
-      return res.status(400).send("Ошибка OAuth: неверный state.");
-    }
-
-    const tokenResponse = await fetch(
-      "https://oauth2.googleapis.com/token",
-      {
-        method: "POST",
-        headers: {
-          "Content-Type":
-            "application/x-www-form-urlencoded",
-        },
-        body: new URLSearchParams({
-          code: String(code),
-          client_id: GOOGLE_CLIENT_ID,
-          client_secret: GOOGLE_CLIENT_SECRET,
-          redirect_uri: REDIRECT_URI,
-          grant_type: "authorization_code",
-        }),
-      }
-    );
-
-    const tokens = await tokenResponse.json();
-
-    if (!tokenResponse.ok) {
-      console.error("GOOGLE TOKEN ERROR:", tokens);
-      return res.status(500).send(
-        "Google не выдал токены. Проверьте OAuth-настройки."
-      );
-    }
-
-    if (!tokens.refresh_token) {
-      return res.status(500).send(
-        "Google не вернул refresh token. Повторите авторизацию с подтверждением доступа."
-      );
-    }
-
-    const refreshToken = tokens.refresh_token;
-
-    res.send(`
-      <html lang="ru">
-      <head>
-        <meta charset="UTF-8">
-        <title>Google авторизация</title>
-      </head>
-      <body style="font-family:Arial;padding:30px">
-        <h2>Google Calendar подключён ✅</h2>
-        <p>Теперь скопируйте Refresh Token в Render:</p>
-
-        <p><b>Render → dantist-ai → Environment</b></p>
-        <p>Переменная:</p>
-
-        <pre style="
-          background:#f3f3f3;
-          padding:15px;
-          white-space:pre-wrap;
-          word-break:break-all;
-        ">${refreshToken}</pre>
-
-        <p>
-          Добавьте его в переменную
-          <b>GOOGLE_REFRESH_TOKEN</b>.
-        </p>
-
-        <p>После сохранения Render автоматически перезапустится.</p>
-      </body>
-      </html>
-    `);
-
-  } catch (error) {
-    console.error("GOOGLE OAUTH ERROR:", error);
-    res.status(500).send("Ошибка авторизации Google.");
-  }
-});
-
-/* -----------------------------
-   REFRESH GOOGLE ACCESS TOKEN
------------------------------ */
-
+/*
+  Получаем свежий Google access token.
+  Пока старый токен действителен, используем его.
+  Когда срок подходит к концу — автоматически получаем новый
+  через refresh token.
+*/
 async function getGoogleAccessToken() {
   if (
     cachedAccessToken &&
-    Date.now() < accessTokenExpiresAt - 60000
+    Date.now() < accessTokenExpiresAt - 60_000
   ) {
     return cachedAccessToken;
   }
 
-  if (!GOOGLE_REFRESH_TOKEN) {
+  if (
+    !GOOGLE_CLIENT_ID ||
+    !GOOGLE_CLIENT_SECRET ||
+    !GOOGLE_REFRESH_TOKEN
+  ) {
     throw new Error(
-      "GOOGLE_REFRESH_TOKEN не настроен."
+      "Google OAuth переменные не настроены в Render."
     );
   }
 
@@ -169,24 +69,28 @@ async function getGoogleAccessToken() {
 
   const tokens = await response.json();
 
-  if (!response.ok || !tokens.access_token) {
-    console.error("GOOGLE REFRESH ERROR:", tokens);
+  if (
+    !response.ok ||
+    !tokens.access_token
+  ) {
+    console.error(
+      "GOOGLE TOKEN REFRESH ERROR:",
+      tokens
+    );
+
     throw new Error(
-      "Не удалось обновить Google access token."
+      "Google не смог обновить access token."
     );
   }
 
   cachedAccessToken = tokens.access_token;
 
   accessTokenExpiresAt =
-    Date.now() + (tokens.expires_in || 3600) * 1000;
+    Date.now() +
+    (tokens.expires_in || 3600) * 1000;
 
   return cachedAccessToken;
 }
-
-/* -----------------------------
-   CHAT
------------------------------ */
 
 app.post("/api/chat", async (req, res) => {
   try {
@@ -199,6 +103,10 @@ app.post("/api/chat", async (req, res) => {
       });
     }
 
+    /*
+      Каждый запрос получает действующий Google access token.
+      Если старый истёк — он автоматически обновляется.
+    */
     const googleAccessToken =
       await getGoogleAccessToken();
 
@@ -221,14 +129,21 @@ app.post("/api/chat", async (req, res) => {
         verbosity: "low",
       },
 
-      prompt_cache_key: "dantist-ai-clinic",
+      prompt_cache_key:
+        "dantist-ai-clinic",
 
       tools: [
         {
           type: "mcp",
-          server_label: "google_calendar",
-          connector_id: "connector_googlecalendar",
-          authorization: googleAccessToken,
+
+          server_label:
+            "google_calendar",
+
+          connector_id:
+            "connector_googlecalendar",
+
+          authorization:
+            googleAccessToken,
 
           allowed_tools: [
             "list_events",
@@ -245,21 +160,29 @@ app.post("/api/chat", async (req, res) => {
       max_tool_calls: 3,
     };
 
-    if (req.body?.previous_response_id) {
+    if (
+      req.body?.previous_response_id
+    ) {
       request.previous_response_id =
-        String(req.body.previous_response_id);
+        String(
+          req.body.previous_response_id
+        );
     }
 
     const response =
-      await openai.responses.create(request);
+      await openai.responses.create(
+        request
+      );
 
     res.json({
       reply:
-        response.output_text || "Готово.",
+        response.output_text ||
+        "Готово.",
       response_id: response.id,
     });
 
   } catch (error) {
+
     console.error(
       "OPENAI/MCP ERROR:",
       error
