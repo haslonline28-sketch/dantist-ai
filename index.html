@@ -2,51 +2,82 @@
 <html lang="ru">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Дантист — ИИ-ассистент</title>
 <style>
-body{font-family:Arial,sans-serif;background:#f4f6f8;margin:0}
-.wrap{max-width:760px;margin:40px auto;padding:20px}
-.card{background:white;border-radius:18px;padding:24px;box-shadow:0 4px 20px #0001}
-h1{margin-top:0}.chat{min-height:360px;border:1px solid #ddd;border-radius:12px;padding:14px;margin:18px 0;overflow:auto}
-.msg{padding:10px 12px;border-radius:12px;margin:8px 0;max-width:85%}
-.bot{background:#f0f2f5}.user{background:#e8f0fe;margin-left:auto}
-.row{display:flex;gap:10px}
-input{flex:1;padding:13px;border:1px solid #ccc;border-radius:10px;font-size:16px}
-button{padding:13px 18px;border:0;border-radius:10px;cursor:pointer;font-size:16px}
-.note{color:#666;font-size:13px}
+  *{box-sizing:border-box}
+  body{margin:0;font-family:Arial,sans-serif;background:#f3f6f8;color:#182026}
+  .wrap{max-width:780px;margin:0 auto;padding:24px}
+  .card{background:#fff;border-radius:20px;padding:24px;box-shadow:0 8px 30px rgba(0,0,0,.08)}
+  h1{margin:0 0 4px;font-size:28px}
+  .sub{color:#66727d;margin-bottom:18px}
+  .chat{height:440px;overflow:auto;border:1px solid #dde3e8;border-radius:14px;padding:14px;background:#fafbfc}
+  .msg{max-width:86%;padding:11px 13px;border-radius:14px;margin:8px 0;white-space:pre-wrap;line-height:1.4}
+  .bot{background:#eef1f4}
+  .user{margin-left:auto;background:#e8f0fe}
+  .row{display:flex;gap:10px;margin-top:12px}
+  input{flex:1;padding:13px 14px;border:1px solid #cdd5db;border-radius:11px;font-size:16px}
+  button{padding:13px 18px;border:0;border-radius:11px;background:#111827;color:white;font-size:16px;cursor:pointer}
+  button:disabled{opacity:.5;cursor:default}
+  .note{margin-top:12px;color:#737f88;font-size:12px}
 </style>
 </head>
 <body>
-<div class="wrap"><div class="card">
-<h1>🦷 Дантист</h1>
-<div class="note">ИИ-ассистент клиники</div>
-<div id="chat" class="chat">
-<div class="msg bot">Здравствуйте! Я ИИ-ассистент клиники «Дантист». Чем могу помочь?</div>
+<div class="wrap">
+  <div class="card">
+    <h1>🦷 Дантист</h1>
+    <div class="sub">ИИ-ассистент стоматологической клиники</div>
+    <div id="chat" class="chat">
+      <div class="msg bot">Здравствуйте! Я ИИ-ассистент клиники «Дантист». Чем могу помочь?</div>
+    </div>
+    <div class="row">
+      <input id="input" placeholder="Напишите сообщение..." autocomplete="off">
+      <button id="send">Отправить</button>
+    </div>
+    <div class="note">Демо-версия. Не вводите реальные медицинские документы или платёжные данные.</div>
+  </div>
 </div>
-<div class="row">
-<input id="input" placeholder="Напишите сообщение..." autocomplete="off">
-<button onclick="send()">Отправить</button>
-</div>
-<p class="note">Демо-версия. Не вводите сюда чувствительные персональные данные.</p>
-</div></div>
 <script>
+let previousResponseId = null;
+const input = document.getElementById('input');
+const sendBtn = document.getElementById('send');
+const chat = document.getElementById('chat');
+
+function add(text, cls){
+  const div = document.createElement('div');
+  div.className = 'msg ' + cls;
+  div.textContent = text;
+  chat.appendChild(div);
+  chat.scrollTop = chat.scrollHeight;
+}
+
 async function send(){
- const input=document.getElementById('input'), text=input.value.trim();
- if(!text)return;
- add(text,'user'); input.value='';
- try{
-   const r=await fetch('/api/chat',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({message:text})});
-   const data=await r.json();
-   add(data.reply||'Не удалось получить ответ.','bot');
- }catch(e){add('Сервер пока не подключён. Это интерфейс демо.','bot');}
+  const text = input.value.trim();
+  if(!text || sendBtn.disabled) return;
+  add(text, 'user');
+  input.value = '';
+  sendBtn.disabled = true;
+  try{
+    const body = {message:text};
+    if(previousResponseId) body.previous_response_id = previousResponseId;
+    const r = await fetch('/api/chat', {
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body:JSON.stringify(body)
+    });
+    const data = await r.json();
+    if(data.response_id) previousResponseId = data.response_id;
+    add(data.reply || 'Не удалось получить ответ.', 'bot');
+  }catch(e){
+    add('Ошибка соединения с сервером.', 'bot');
+  }finally{
+    sendBtn.disabled = false;
+    input.focus();
+  }
 }
-function add(t,c){
- const d=document.createElement('div'); d.className='msg '+c; d.textContent=t;
- document.getElementById('chat').appendChild(d);
- d.scrollIntoView();
-}
-document.getElementById('input').addEventListener('keydown',e=>{if(e.key==='Enter')send()});
+sendBtn.addEventListener('click', send);
+input.addEventListener('keydown', e => { if(e.key === 'Enter') send(); });
+input.focus();
 </script>
 </body>
 </html>
