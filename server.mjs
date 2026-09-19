@@ -57,10 +57,9 @@ app.post("/api/chat", async (req, res) => {
       tools: [
         {
           type: "mcp",
-          server_label: "google_calendar",
-          server_url:
-            "https://calendarmcp.googleapis.com/mcp/v1",
-          authorization: GOOGLE_CALENDAR_TOKEN,
+       server_label: "google_calendar",
+connector_id: "connector_googlecalendar",
+authorization: GOOGLE_CALENDAR_TOKEN,
 
           // Оставляем только нужные операции.
           allowed_tools: [
