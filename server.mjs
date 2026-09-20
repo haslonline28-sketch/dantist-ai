@@ -11,91 +11,15 @@ const openai = new OpenAI({
 const PROMPT_ID =
   "pmpt_6aae367cd5888195aafee0f4ab45190f05c44e3dc0d620aa";
 
-const GOOGLE_CLIENT_ID =
-  process.env.GOOGLE_CLIENT_ID;
-
-const GOOGLE_CLIENT_SECRET =
-  process.env.GOOGLE_CLIENT_SECRET;
-
-const GOOGLE_REFRESH_TOKEN =
-  process.env.GOOGLE_REFRESH_TOKEN;
-
-let cachedAccessToken = null;
-let accessTokenExpiresAt = 0;
+const GOOGLE_CALENDAR_TOKEN =
+  process.env.GOOGLE_CALENDAR_OAUTH_ACCESS_TOKEN;
 
 app.use(express.json());
 app.use(express.static("."));
 
-/*
-  Получаем свежий Google access token.
-  Пока старый токен действителен, используем его.
-  Когда срок подходит к концу — автоматически получаем новый
-  через refresh token.
-*/
-async function getGoogleAccessToken() {
-  if (
-    cachedAccessToken &&
-    Date.now() < accessTokenExpiresAt - 60_000
-  ) {
-    return cachedAccessToken;
-  }
-
-  if (
-    !GOOGLE_CLIENT_ID ||
-    !GOOGLE_CLIENT_SECRET ||
-    !GOOGLE_REFRESH_TOKEN
-  ) {
-    throw new Error(
-      "Google OAuth переменные не настроены в Render."
-    );
-  }
-
-  const response = await fetch(
-    "https://oauth2.googleapis.com/token",
-    {
-      method: "POST",
-      headers: {
-        "Content-Type":
-          "application/x-www-form-urlencoded",
-      },
-      body: new URLSearchParams({
-        client_id: GOOGLE_CLIENT_ID,
-        client_secret: GOOGLE_CLIENT_SECRET,
-        refresh_token: GOOGLE_REFRESH_TOKEN,
-        grant_type: "refresh_token",
-      }),
-    }
-  );
-
-  const tokens = await response.json();
-
-  if (
-    !response.ok ||
-    !tokens.access_token
-  ) {
-    console.error(
-      "GOOGLE TOKEN REFRESH ERROR:",
-      tokens
-    );
-
-    throw new Error(
-      "Google не смог обновить access token."
-    );
-  }
-
-  cachedAccessToken = tokens.access_token;
-
-  accessTokenExpiresAt =
-    Date.now() +
-    (tokens.expires_in || 3600) * 1000;
-
-  return cachedAccessToken;
-}
-
 app.post("/api/chat", async (req, res) => {
   try {
-    const message =
-      String(req.body?.message || "").trim();
+    const message = String(req.body?.message || "").trim();
 
     if (!message) {
       return res.status(400).json({
@@ -103,48 +27,47 @@ app.post("/api/chat", async (req, res) => {
       });
     }
 
-    /*
-      Каждый запрос получает действующий Google access token.
-      Если старый истёк — он автоматически обновляется.
-    */
-    const googleAccessToken =
-      await getGoogleAccessToken();
-
     const request = {
       model: "gpt-5.6-luna",
 
+      // Ваш опубликованный Prompt
       prompt: {
         id: PROMPT_ID,
       },
 
       input: message,
 
+      // Ограничиваем максимальный размер ответа
+      // для снижения расхода токенов.
       max_output_tokens: 1000,
 
+      // Для административных задач клиники
+      // достаточно небольшого уровня рассуждений.
       reasoning: {
         effort: "low",
       },
 
+      // Ответы пациентам делаем короткими.
       text: {
         verbosity: "low",
       },
 
-      prompt_cache_key:
-        "dantist-ai-clinic",
+      // Стабильный ключ для prompt caching.
+      prompt_cache_key: "dantist-ai-clinic",
 
       tools: [
         {
           type: "mcp",
 
-          server_label:
-            "google_calendar",
+          // Google Calendar через официальный OpenAI connector
+          server_label: "google_calendar",
 
-          connector_id:
-            "connector_googlecalendar",
+          connector_id: "connector_googlecalendar",
 
-          authorization:
-            googleAccessToken,
+          // OAuth-токен хранится только в Render
+          authorization: GOOGLE_CALENDAR_TOKEN,
 
+          // Только нужные действия календаря
           allowed_tools: [
             "list_events",
             "get_event",
@@ -153,50 +76,40 @@ app.post("/api/chat", async (req, res) => {
             "delete_event",
           ],
 
+          // Для нашего серверного демо не спрашиваем
+          // отдельное подтверждение каждого действия.
           require_approval: "never",
         },
       ],
 
+      // Не позволяем модели делать бесконечную цепочку
+      // вызовов инструментов.
       max_tool_calls: 3,
     };
 
-    if (
-      req.body?.previous_response_id
-    ) {
-      request.previous_response_id =
-        String(
-          req.body.previous_response_id
-        );
+    // Продолжаем текущий диалог.
+    if (req.body?.previous_response_id) {
+      request.previous_response_id = String(
+        req.body.previous_response_id
+      );
     }
 
-    const response =
-      await openai.responses.create(
-        request
-      );
+    const response = await openai.responses.create(request);
 
     res.json({
-      reply:
-        response.output_text ||
-        "Готово.",
+      reply: response.output_text || "Готово.",
       response_id: response.id,
     });
 
   } catch (error) {
-
-    console.error(
-      "OPENAI/MCP ERROR:",
-      error
-    );
+    console.error("OPENAI/MCP ERROR:", error);
 
     res.status(500).json({
-      reply:
-        "Произошла ошибка на сервере. Попробуйте ещё раз.",
+      reply: "Произошла ошибка на сервере. Попробуйте ещё раз.",
     });
   }
 });
 
 app.listen(port, () => {
-  console.log(
-    `Дантист запущен на порту ${port}`
-  );
+  console.log(`Дантист запущен на порту ${port}`);
 });
