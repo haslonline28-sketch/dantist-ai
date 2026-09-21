@@ -62,11 +62,7 @@ async function getGoogleAccessToken() {
   const data = await response.json();
 
   if (!response.ok || !data.access_token) {
-    console.error(
-      "GOOGLE TOKEN ERROR:",
-      data
-    );
-
+    console.error("GOOGLE TOKEN ERROR:", data);
     throw new Error(
       "Failed to refresh Google OAuth token"
     );
@@ -88,10 +84,8 @@ async function getGoogleAccessToken() {
 }
 
 function needsCalendar(message) {
-  const text = message.toLowerCase();
-
   return /запис|записаться|запиши|приём|прием|стоматолог|врач|лечение|чистк|удалени|пломб|свободн|окн|врем|дата|перенес|перенести|отмен|отменить|календар|запись/i.test(
-    text
+    message.toLowerCase()
   );
 }
 
@@ -107,33 +101,22 @@ app.post("/api/chat", async (req, res) => {
       });
     }
 
-    console.log(
-      "USER MESSAGE:",
-      message
-    );
+    console.log("USER MESSAGE:", message);
 
     const request = {
       model: "gpt-5.6-luna",
-
       prompt: {
         id: PROMPT_ID,
       },
-
       input: message,
-
       max_output_tokens: 400,
-
       reasoning: {
         effort: "low",
       },
-
       text: {
         verbosity: "low",
       },
-
-      prompt_cache_key:
-        "dantist-ai-clinic",
-
+      prompt_cache_key: "dantist-ai-clinic",
       max_tool_calls: 1,
     };
 
@@ -142,28 +125,23 @@ app.post("/api/chat", async (req, res) => {
         "CALENDAR: connecting Google Calendar"
       );
 
-      const googleAccessToken =
+      const accessToken =
         await getGoogleAccessToken();
 
       request.tools = [
         {
           type: "mcp",
-          server_label:
-            "google_calendar",
+          server_label: "google_calendar",
           connector_id:
             "connector_googlecalendar",
-          authorization:
-            googleAccessToken,
-          require_approval:
-            "never",
+          authorization: accessToken,
+          require_approval: "never",
         },
       ];
     }
 
     const response =
-      await openai.responses.create(
-        request
-      );
+      await openai.responses.create(request);
 
     console.log(
       "OPENAI USAGE:",
@@ -180,17 +158,13 @@ app.post("/api/chat", async (req, res) => {
         response.output_text ||
         "Извините, не удалось сформировать ответ.",
     });
-
   } catch (error) {
     console.error(
       "OPENAI/MCP ERROR:",
       error
     );
 
-    const status =
-      error?.status || 500;
-
-    if (status === 429) {
+    if (error?.status === 429) {
       return res.status(429).json({
         reply:
           "Сервис временно перегружен. Попробуйте ещё раз немного позже.",
@@ -209,10 +183,10 @@ app.get("/health", (req, res) => {
     status: "ok",
     service: "dantist-ai",
   });
-  );
+});
 
 app.listen(port, () => {
   console.log(
     `Дантист запущен на порту ${port}`
   );
-});}
+});
