@@ -1,5 +1,6 @@
 import express from "express";
 import OpenAI from "openai";
+import crypto from "crypto";
 
 const app = express();
 const port = process.env.PORT || 3000;
@@ -16,6 +17,48 @@ app.use(express.static("."));
 
 let googleAccessToken = null;
 let googleAccessTokenExpiresAt = 0;
+
+/*
+  Простое хранение истории диалогов.
+
+  Каждый посетитель получает свой session ID через cookie.
+  История хранится в памяти Render.
+*/
+const sessions = new Map();
+
+const MAX_HISTORY_MESSAGES = 20;
+
+function getSessionId(req, res) {
+  const cookies = req.headers.cookie || "";
+
+  const match = cookies.match(
+    /(?:^|;\s*)dantist_session=([^;]+)/
+  );
+
+  if (match && match[1]) {
+    return match[1];
+  }
+
+  const sessionId = crypto.randomUUID();
+
+  res.setHeader(
+    "Set-Cookie",
+    `dantist_session=${sessionId}; Path=/; HttpOnly; SameSite=Lax`
+  );
+
+  return sessionId;
+}
+
+function getSession(sessionId) {
+  if (!sessions.has(sessionId)) {
+    sessions.set(sessionId, {
+      history: [],
+      calendarActive: false,
+    });
+  }
+
+  return sessions.get(sessionId);
+}
 
 async function getGoogleAccessToken() {
   const now = Date.now();
@@ -63,6 +106,7 @@ async function getGoogleAccessToken() {
 
   if (!response.ok || !data.access_token) {
     console.error("GOOGLE TOKEN ERROR:", data);
+
     throw new Error(
       "Failed to refresh Google OAuth token"
     );
@@ -84,7 +128,7 @@ async function getGoogleAccessToken() {
 }
 
 function needsCalendar(message) {
-  return /запис|записаться|запиши|приём|прием|стоматолог|врач|лечение|чистк|удалени|пломб|свободн|окн|врем|дата|перенес|перенести|отмен|отменить|календар|запись/i.test(
+  return /запис|записаться|запиши|приём|прием|стоматолог|врач|лечение|чистк|удалени|пломб|свободн|окн|врем|дата|перенес|перенести|отмен|отменить|календар|запись|\b\d{1,2}[:.]\d{2}\b/i.test(
     message.toLowerCase()
   );
 }
@@ -101,26 +145,76 @@ app.post("/api/chat", async (req, res) => {
       });
     }
 
+    const sessionId = getSessionId(req, res);
+    const session = getSession(sessionId);
+
     console.log("USER MESSAGE:", message);
+    console.log(
+      "SESSION:",
+      sessionId
+    );
+
+    /*
+      Если разговор уже связан с записью,
+      продолжаем использовать Google Calendar
+      даже если пользователь написал просто "9:00".
+    */
+    if (needsCalendar(message)) {
+      session.calendarActive = true;
+    }
+
+    /*
+      Добавляем сообщение пациента в историю.
+    */
+    session.history.push({
+      role: "user",
+      content: message,
+    });
+
+    /*
+      Ограничиваем историю, чтобы запросы
+      не становились слишком большими.
+    */
+    if (
+      session.history.length >
+      MAX_HISTORY_MESSAGES
+    ) {
+      session.history =
+        session.history.slice(
+          -MAX_HISTORY_MESSAGES
+        );
+    }
 
     const request = {
       model: "gpt-5.6-luna",
+
       prompt: {
         id: PROMPT_ID,
       },
-      input: message,
+
+      input: session.history,
+
       max_output_tokens: 400,
+
       reasoning: {
         effort: "low",
       },
+
       text: {
         verbosity: "low",
       },
-      prompt_cache_key: "dantist-ai-clinic",
+
+      prompt_cache_key:
+        "dantist-ai-clinic",
+
       max_tool_calls: 1,
     };
 
-    if (needsCalendar(message)) {
+    /*
+      Если пользователь находится в сценарии записи,
+      подключаем Google Calendar.
+    */
+    if (session.calendarActive) {
       console.log(
         "CALENDAR: connecting Google Calendar"
       );
@@ -153,10 +247,31 @@ app.post("/api/chat", async (req, res) => {
       response.id
     );
 
+    const reply =
+      response.output_text ||
+      "Извините, не удалось сформировать ответ.";
+
+    /*
+      Сохраняем ответ ассистента в историю,
+      чтобы следующий вопрос видел контекст.
+    */
+    session.history.push({
+      role: "assistant",
+      content: reply,
+    });
+
+    if (
+      session.history.length >
+      MAX_HISTORY_MESSAGES
+    ) {
+      session.history =
+        session.history.slice(
+          -MAX_HISTORY_MESSAGES
+        );
+    }
+
     return res.json({
-      reply:
-        response.output_text ||
-        "Извините, не удалось сформировать ответ.",
+      reply,
     });
   } catch (error) {
     console.error(
