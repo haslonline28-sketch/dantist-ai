@@ -17,6 +17,17 @@ const GOOGLE_CALENDAR_TOKEN =
 app.use(express.json());
 app.use(express.static("."));
 
+
+// Определяем, нужен ли пользователю Google Calendar
+function needsCalendar(message) {
+  const text = message.toLowerCase();
+
+  return /запис|записаться|запиши|приём|прием|стоматолог|врач|лечение|чистк|удалени|пломб|свободн|окн|врем|дата|перенес|перенести|отмен|отменить|календар|запись|приём|прием/i.test(
+    text
+  );
+}
+
+
 app.post("/api/chat", async (req, res) => {
   try {
     const message = String(req.body?.message || "").trim();
@@ -30,85 +41,89 @@ app.post("/api/chat", async (req, res) => {
     const request = {
       model: "gpt-5.6-luna",
 
-      // Ваш опубликованный Prompt
       prompt: {
         id: PROMPT_ID,
       },
 
       input: message,
 
-      // Ограничиваем максимальный размер ответа
-      // для снижения расхода токенов.
-      max_output_tokens: 1000,
+      max_output_tokens: 700,
 
-      // Для административных задач клиники
-      // достаточно небольшого уровня рассуждений.
       reasoning: {
         effort: "low",
       },
 
-      // Ответы пациентам делаем короткими.
       text: {
         verbosity: "low",
       },
 
-      // Стабильный ключ для prompt caching.
       prompt_cache_key: "dantist-ai-clinic",
 
-      tools: [
-        {
-          type: "mcp",
-
-          // Google Calendar через официальный OpenAI connector
-          server_label: "google_calendar",
-
-          connector_id: "connector_googlecalendar",
-
-          // OAuth-токен хранится только в Render
-          authorization: GOOGLE_CALENDAR_TOKEN,
-
-          // Только нужные действия календаря
-          allowed_tools: [
-            "list_events",
-            "get_event",
-            "create_event",
-            "update_event",
-            "delete_event",
-          ],
-
-          // Для нашего серверного демо не спрашиваем
-          // отдельное подтверждение каждого действия.
-          require_approval: "never",
-        },
-      ],
-
-      // Не позволяем модели делать бесконечную цепочку
-      // вызовов инструментов.
       max_tool_calls: 3,
     };
 
-    // Продолжаем текущий диалог.
+
+    // Google Calendar подключаем только когда он действительно нужен
+    if (needsCalendar(message)) {
+      request.tools = [
+        {
+          type: "mcp",
+          server_label: "google_calendar",
+          connector_id: "connector_googlecalendar",
+          authorization: GOOGLE_CALENDAR_TOKEN,
+          require_approval: "never",
+        },
+      ];
+    }
+
+
+    // Продолжаем предыдущий диалог, если он есть
     if (req.body?.previous_response_id) {
       request.previous_response_id = String(
         req.body.previous_response_id
       );
     }
 
+
     const response = await openai.responses.create(request);
 
+
     res.json({
-      reply: response.output_text || "Готово.",
+      reply:
+        response.output_text ||
+        "Извините, не удалось сформировать ответ.",
       response_id: response.id,
     });
 
   } catch (error) {
+
     console.error("OPENAI/MCP ERROR:", error);
 
+    const status = error?.status || 500;
+
+    // Не показываем пользователю технические подробности
+    if (status === 429) {
+      return res.status(429).json({
+        reply:
+          "Сервис временно перегружен. Попробуйте ещё раз немного позже.",
+      });
+    }
+
     res.status(500).json({
-      reply: "Произошла ошибка на сервере. Попробуйте ещё раз.",
+      reply:
+        "Произошла ошибка на сервере. Попробуйте ещё раз.",
     });
   }
 });
+
+
+app.get("/health", (req, res) => {
+  res.json({
+    status: "ok",
+    service: "dantist-ai",
+  });
+});
+
 
 app.listen(port, () => {
   console.log(`Дантист запущен на порту ${port}`);
