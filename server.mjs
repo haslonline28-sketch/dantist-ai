@@ -15,13 +15,19 @@ const PROMPT_ID =
 app.use(express.json());
 app.use(express.static("."));
 
+// Google OAuth
 let googleAccessToken = null;
 let googleAccessTokenExpiresAt = 0;
 
-// История одного демонстрационного диалога
+// История демонстрационного диалога
 let conversationHistory = [];
 
 const MAX_HISTORY_MESSAGES = 20;
+
+
+// ===============================
+// GOOGLE ACCESS TOKEN
+// ===============================
 
 async function getGoogleAccessToken() {
   const now = Date.now();
@@ -52,10 +58,12 @@ async function getGoogleAccessToken() {
     "https://oauth2.googleapis.com/token",
     {
       method: "POST",
+
       headers: {
         "Content-Type":
           "application/x-www-form-urlencoded",
       },
+
       body: new URLSearchParams({
         client_id: clientId,
         client_secret: clientSecret,
@@ -93,11 +101,21 @@ async function getGoogleAccessToken() {
   return googleAccessToken;
 }
 
+
+// ===============================
+// ПРОВЕРКА: НУЖЕН ЛИ КАЛЕНДАРЬ
+// ===============================
+
 function needsCalendar(message) {
   return /запис|записаться|запиши|приём|прием|стоматолог|врач|лечение|чистк|удалени|пломб|свободн|окн|врем|дата|перенес|перенести|отмен|отменить|календар|запись|\b\d{1,2}[:.]\d{2}\b/i.test(
     message.toLowerCase()
   );
 }
+
+
+// ===============================
+// CHAT
+// ===============================
 
 app.post("/api/chat", async (req, res) => {
   try {
@@ -111,15 +129,13 @@ app.post("/api/chat", async (req, res) => {
       });
     }
 
-    console.log(
-      "USER MESSAGE:",
-      message
-    );
+    console.log("");
+    console.log("=================================");
+    console.log("USER MESSAGE:", message);
+    console.log("=================================");
 
-    /*
-      Добавляем сообщение пользователя
-      в историю текущего демонстрационного диалога.
-    */
+
+    // Добавляем сообщение пользователя
     conversationHistory.push({
       role: "user",
       content: message,
@@ -135,15 +151,10 @@ app.post("/api/chat", async (req, res) => {
         );
     }
 
-    /*
-      Подключаем Google Calendar для всех
-      сообщений, связанных с записью.
-    */
-    if (needsCalendar(message)) {
-      console.log(
-        "CALENDAR: connecting Google Calendar"
-      );
-    }
+
+    // ===============================
+    // REQUEST OPENAI
+    // ===============================
 
     const request = {
       model: "gpt-5.6-luna",
@@ -152,10 +163,6 @@ app.post("/api/chat", async (req, res) => {
         id: PROMPT_ID,
       },
 
-      /*
-        Передаём всю историю, а не только последнее
-        сообщение.
-      */
       input: conversationHistory,
 
       max_output_tokens: 500,
@@ -171,17 +178,13 @@ app.post("/api/chat", async (req, res) => {
       prompt_cache_key:
         "dantist-ai-clinic",
 
-      /*
-        Разрешаем модели использовать MCP.
-      */
       max_tool_calls: 5,
     };
 
-    /*
-      Google Calendar подключаем, если сообщение
-      относится к записи или если в истории уже
-      идёт сценарий записи.
-    */
+
+    // Собираем весь текущий диалог
+    // для определения необходимости календаря
+
     const historyText =
       conversationHistory
         .map((item) =>
@@ -189,21 +192,37 @@ app.post("/api/chat", async (req, res) => {
         )
         .join(" ");
 
+
+    // ===============================
+    // GOOGLE CALENDAR MCP
+    // ===============================
+
     if (
       needsCalendar(message) ||
       needsCalendar(historyText)
     ) {
+      console.log(
+        "CALENDAR: connecting Google Calendar"
+      );
+
       const accessToken =
         await getGoogleAccessToken();
 
       request.tools = [
         {
           type: "mcp",
-          server_label: "google_calendar",
+
+          server_label:
+            "google_calendar",
+
           connector_id:
             "connector_googlecalendar",
-          authorization: accessToken,
-          require_approval: "never",
+
+          authorization:
+            accessToken,
+
+          require_approval:
+            "never",
         },
       ];
 
@@ -212,8 +231,20 @@ app.post("/api/chat", async (req, res) => {
       );
     }
 
+
+    // ===============================
+    // OPENAI REQUEST
+    // ===============================
+
     const response =
-      await openai.responses.create(request);
+      await openai.responses.create(
+        request
+      );
+
+
+    // ===============================
+    // DIAGNOSTICS
+    // ===============================
 
     console.log(
       "OPENAI USAGE:",
@@ -226,14 +257,37 @@ app.post("/api/chat", async (req, res) => {
       response.id
     );
 
-    /*
-      Важно:
-      сохраняем именно ответ модели в историю.
-    */
+
+    // ВАЖНО:
+    // Показываем весь output OpenAI,
+    // чтобы увидеть вызов MCP/create_event.
+
+    console.log(
+      "OPENAI OUTPUT:",
+      JSON.stringify(
+        response.output,
+        null,
+        2
+      )
+    );
+
+
+    // ===============================
+    // RESPONSE TEXT
+    // ===============================
+
     const reply =
       response.output_text ||
       "Извините, не удалось сформировать ответ.";
 
+
+    console.log(
+      "ASSISTANT REPLY:",
+      reply
+    );
+
+
+    // Сохраняем ответ ассистента
     conversationHistory.push({
       role: "assistant",
       content: reply,
@@ -249,14 +303,18 @@ app.post("/api/chat", async (req, res) => {
         );
     }
 
+
     return res.json({
       reply,
     });
+
   } catch (error) {
+
     console.error(
       "OPENAI/MCP ERROR:",
       error
     );
+
 
     if (error?.status === 429) {
       return res.status(429).json({
@@ -265,6 +323,7 @@ app.post("/api/chat", async (req, res) => {
       });
     }
 
+
     return res.status(500).json({
       reply:
         "Произошла ошибка сервера. Попробуйте ещё раз.",
@@ -272,15 +331,31 @@ app.post("/api/chat", async (req, res) => {
   }
 });
 
-app.get("/health", (req, res) => {
-  res.json({
-    status: "ok",
-    service: "dantist-ai",
-  });
-});
 
-app.listen(port, () => {
-  console.log(
-    `Дантист запущен на порту ${port}`
-  );
-});
+// ===============================
+// HEALTH CHECK
+// ===============================
+
+app.get(
+  "/health",
+  (req, res) => {
+    res.json({
+      status: "ok",
+      service: "dantist-ai",
+    });
+  }
+);
+
+
+// ===============================
+// START SERVER
+// ===============================
+
+app.listen(
+  port,
+  () => {
+    console.log(
+      `Дантист запущен на порту ${port}`
+    );
+  }
+);
