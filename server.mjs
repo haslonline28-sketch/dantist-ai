@@ -11,14 +11,82 @@ const openai = new OpenAI({
 const PROMPT_ID =
   "pmpt_6aae367cd5888195aafee0f4ab45190f05c44e3dc0d620aa";
 
-const GOOGLE_CALENDAR_TOKEN =
-  process.env.GOOGLE_CALENDAR_OAUTH_ACCESS_TOKEN;
-
 app.use(express.json());
 app.use(express.static("."));
 
+// ===============================
+// Google OAuth
+// ===============================
 
-// Определяем, нужен ли пользователю Google Calendar
+let googleAccessToken = null;
+let googleAccessTokenExpiresAt = 0;
+
+async function getGoogleAccessToken() {
+  const now = Date.now();
+
+  // Используем существующий токен, если он ещё действителен
+  if (
+    googleAccessToken &&
+    now < googleAccessTokenExpiresAt - 60_000
+  ) {
+    return googleAccessToken;
+  }
+
+  const refreshToken =
+    process.env.GOOGLE_CALENDAR_REFRESH_TOKEN;
+
+  const clientId =
+    process.env.GOOGLE_OAUTH_CLIENT_ID;
+
+  const clientSecret =
+    process.env.GOOGLE_OAUTH_CLIENT_SECRET;
+
+  if (!refreshToken || !clientId || !clientSecret) {
+    throw new Error(
+      "Google OAuth environment variables are missing"
+    );
+  }
+
+  const response = await fetch(
+    "https://oauth2.googleapis.com/token",
+    {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/x-www-form-urlencoded",
+      },
+      body: new URLSearchParams({
+        client_id: clientId,
+        client_secret: clientSecret,
+        refresh_token: refreshToken,
+        grant_type: "refresh_token",
+      }),
+    }
+  );
+
+  const data = await response.json();
+
+  if (!response.ok || !data.access_token) {
+    console.error("GOOGLE TOKEN ERROR:", data);
+    throw new Error("Failed to refresh Google OAuth token");
+  }
+
+  googleAccessToken = data.access_token;
+
+  const expiresIn =
+    Number(data.expires_in || 3600) * 1000;
+
+  googleAccessTokenExpiresAt =
+    Date.now() + expiresIn;
+
+  console.log("Google OAuth access token refreshed");
+
+  return googleAccessToken;
+}
+
+// ===============================
+// Определяем, нужен ли Calendar
+// ===============================
+
 function needsCalendar(message) {
   const text = message.toLowerCase();
 
@@ -27,10 +95,15 @@ function needsCalendar(message) {
   );
 }
 
+// ===============================
+// Chat API
+// ===============================
 
 app.post("/api/chat", async (req, res) => {
   try {
-    const message = String(req.body?.message || "").trim();
+    const message = String(
+      req.body?.message || ""
+    ).trim();
 
     if (!message) {
       return res.status(400).json({
@@ -62,46 +135,50 @@ app.post("/api/chat", async (req, res) => {
       max_tool_calls: 3,
     };
 
-
-    // Google Calendar подключаем только когда он действительно нужен
+    // Google Calendar подключаем только когда он нужен
     if (needsCalendar(message)) {
+      const googleAccessToken =
+        await getGoogleAccessToken();
+
       request.tools = [
         {
           type: "mcp",
           server_label: "google_calendar",
           connector_id: "connector_googlecalendar",
-          authorization: GOOGLE_CALENDAR_TOKEN,
+
+          authorization: googleAccessToken,
+
           require_approval: "never",
         },
       ];
     }
 
-
-    // Продолжаем предыдущий диалог, если он есть
+    // Продолжаем предыдущий диалог
     if (req.body?.previous_response_id) {
-      request.previous_response_id = String(
-        req.body.previous_response_id
-      );
+      request.previous_response_id =
+        String(req.body.previous_response_id);
     }
 
-
-    const response = await openai.responses.create(request);
-
+    const response =
+      await openai.responses.create(request);
 
     res.json({
       reply:
         response.output_text ||
         "Извините, не удалось сформировать ответ.",
+
       response_id: response.id,
     });
 
   } catch (error) {
+    console.error(
+      "OPENAI/MCP ERROR:",
+      error
+    );
 
-    console.error("OPENAI/MCP ERROR:", error);
+    const status =
+      error?.status || 500;
 
-    const status = error?.status || 500;
-
-    // Не показываем пользователю технические подробности
     if (status === 429) {
       return res.status(429).json({
         reply:
@@ -116,6 +193,9 @@ app.post("/api/chat", async (req, res) => {
   }
 });
 
+// ===============================
+// Health check
+// ===============================
 
 app.get("/health", (req, res) => {
   res.json({
@@ -124,7 +204,8 @@ app.get("/health", (req, res) => {
   });
 });
 
-
 app.listen(port, () => {
-  console.log(`Дантист запущен на порту ${port}`);
+  console.log(
+    `Дантист запущен на порту ${port}`
+  );
 });
