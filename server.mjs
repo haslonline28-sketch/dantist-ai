@@ -14,10 +14,6 @@ const PROMPT_ID =
 app.use(express.json());
 app.use(express.static("."));
 
-// ==================================================
-// GOOGLE OAUTH
-// ==================================================
-
 let googleAccessToken = null;
 let googleAccessTokenExpiresAt = 0;
 
@@ -26,7 +22,7 @@ async function getGoogleAccessToken() {
 
   if (
     googleAccessToken &&
-    now < googleAccessTokenExpiresAt - 60_000
+    now < googleAccessTokenExpiresAt - 60000
   ) {
     return googleAccessToken;
   }
@@ -91,10 +87,6 @@ async function getGoogleAccessToken() {
   return googleAccessToken;
 }
 
-// ==================================================
-// CHECK IF CALENDAR IS NEEDED
-// ==================================================
-
 function needsCalendar(message) {
   const text = message.toLowerCase();
 
@@ -102,10 +94,6 @@ function needsCalendar(message) {
     text
   );
 }
-
-// ==================================================
-// CHAT API
-// ==================================================
 
 app.post("/api/chat", async (req, res) => {
   try {
@@ -149,10 +137,6 @@ app.post("/api/chat", async (req, res) => {
       max_tool_calls: 1,
     };
 
-    // ==================================================
-    // GOOGLE CALENDAR
-    // ==================================================
-
     if (needsCalendar(message)) {
       console.log(
         "CALENDAR: connecting Google Calendar"
@@ -176,23 +160,12 @@ app.post("/api/chat", async (req, res) => {
       ];
     }
 
-    // ==================================================
-    // OPENAI REQUEST
-    // ==================================================
-
     const response =
       await openai.responses.create(
         request
       );
 
-    // ==================================================
-    // TOKEN USAGE LOG
-    // ==================================================
-request.tools — Coming Soon
-request.tools
-
-
-e.log(
+    console.log(
       "OPENAI USAGE:",
       response.usage || "usage unavailable"
     );
@@ -201,10 +174,6 @@ e.log(
       "OPENAI RESPONSE ID:",
       response.id
     );
-
-    // ==================================================
-    // SEND RESPONSE
-    // ==================================================
 
     return res.json({
       reply:
@@ -235,29 +204,15 @@ e.log(
   }
 });
 
-// ==================================================
-// HEALTH CHECK
-// ==================================================
-
 app.get("/health", (req, res) => {
   res.json({
     status: "ok",
     service: "dantist-ai",
   });
-});
-
-// ==================================================
-// START SERVER
-// ==================================================
+  );
 
 app.listen(port, () => {
   console.log(
     `Дантист запущен на порту ${port}`
   );
-}); consol
-
-
-
-
-
-
+});}
