@@ -9,7 +9,7 @@ const openai = new OpenAI({
 });
 
 const PROMPT_ID =
-  "pmpt_6aae367cd5888195aafee0f4ab45190f05c44e3dc0d620aa";
+  "pmpt_6ab1354ce890819391882dd3f4f9426e0328cf7d87380238";
 
 app.use(express.json());
 app.use(express.static("."));
