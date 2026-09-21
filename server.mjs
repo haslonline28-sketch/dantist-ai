@@ -92,7 +92,7 @@ async function getGoogleAccessToken() {
 }
 
 // ==================================================
-// НУЖЕН ЛИ GOOGLE CALENDAR
+// CHECK IF CALENDAR IS NEEDED
 // ==================================================
 
 function needsCalendar(message) {
@@ -104,7 +104,7 @@ function needsCalendar(message) {
 }
 
 // ==================================================
-// CHAT
+// CHAT API
 // ==================================================
 
 app.post("/api/chat", async (req, res) => {
@@ -133,24 +133,19 @@ app.post("/api/chat", async (req, res) => {
 
       input: message,
 
-      // Ограничиваем ответ
       max_output_tokens: 400,
 
-      // Минимальное reasoning
       reasoning: {
         effort: "low",
       },
 
-      // Короткие ответы
       text: {
         verbosity: "low",
       },
 
-      // Помогает повторно использовать одинаковый prompt
       prompt_cache_key:
         "dantist-ai-clinic",
 
-      // Не разрешаем длинную цепочку инструментов
       max_tool_calls: 1,
     };
 
@@ -169,16 +164,12 @@ app.post("/api/chat", async (req, res) => {
       request.tools = [
         {
           type: "mcp",
-
           server_label:
             "google_calendar",
-
           connector_id:
             "connector_googlecalendar",
-
           authorization:
             googleAccessToken,
-
           require_approval:
             "never",
         },
@@ -186,15 +177,7 @@ app.post("/api/chat", async (req, res) => {
     }
 
     // ==================================================
-    // ВАЖНО:
-    // НЕ ПЕРЕДАЁМ previous_response_id
-    //
-    // Каждый запрос теперь независимый.
-    // Это временно
-
-
-лано специально,
-    // чтобы исключить накопление истории.
+    // OPENAI REQUEST
     // ==================================================
 
     const response =
@@ -203,21 +186,24 @@ app.post("/api/chat", async (req, res) => {
       );
 
     // ==================================================
-    // ЛОГИРУЕМ РАСХОД ТОКЕНОВ
+    // TOKEN USAGE LOG
     // ==================================================
+request.tools — Coming Soon
+request.tools
 
-    console.log(
+
+e.log(
       "OPENAI USAGE:",
       response.usage || "usage unavailable"
     );
 
     console.log(
-      "OPENAI RESPONSE:",
+      "OPENAI RESPONSE ID:",
       response.id
     );
 
     // ==================================================
-    // ОТВЕТ КЛИЕНТУ
+    // SEND RESPONSE
     // ==================================================
 
     return res.json({
@@ -261,11 +247,17 @@ app.get("/health", (req, res) => {
 });
 
 // ==================================================
-// START
+// START SERVER
 // ==================================================
 
 app.listen(port, () => {
   console.log(
     `Дантист запущен на порту ${port}`
   );
-}); сде
+}); consol
+
+
+
+
+
+
