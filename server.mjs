@@ -14,9 +14,9 @@ const PROMPT_ID =
 app.use(express.json());
 app.use(express.static("."));
 
-// ===============================
-// Google OAuth
-// ===============================
+// ==================================================
+// GOOGLE OAUTH
+// ==================================================
 
 let googleAccessToken = null;
 let googleAccessTokenExpiresAt = 0;
@@ -24,7 +24,6 @@ let googleAccessTokenExpiresAt = 0;
 async function getGoogleAccessToken() {
   const now = Date.now();
 
-  // Используем существующий токен, если он ещё действителен
   if (
     googleAccessToken &&
     now < googleAccessTokenExpiresAt - 60_000
@@ -52,7 +51,8 @@ async function getGoogleAccessToken() {
     {
       method: "POST",
       headers: {
-        "Content-Type": "application/x-www-form-urlencoded",
+        "Content-Type":
+          "application/x-www-form-urlencoded",
       },
       body: new URLSearchParams({
         client_id: clientId,
@@ -66,8 +66,14 @@ async function getGoogleAccessToken() {
   const data = await response.json();
 
   if (!response.ok || !data.access_token) {
-    console.error("GOOGLE TOKEN ERROR:", data);
-    throw new Error("Failed to refresh Google OAuth token");
+    console.error(
+      "GOOGLE TOKEN ERROR:",
+      data
+    );
+
+    throw new Error(
+      "Failed to refresh Google OAuth token"
+    );
   }
 
   googleAccessToken = data.access_token;
@@ -78,26 +84,28 @@ async function getGoogleAccessToken() {
   googleAccessTokenExpiresAt =
     Date.now() + expiresIn;
 
-  console.log("Google OAuth access token refreshed");
+  console.log(
+    "Google OAuth access token refreshed"
+  );
 
   return googleAccessToken;
 }
 
-// ===============================
-// Определяем, нужен ли Calendar
-// ===============================
+// ==================================================
+// НУЖЕН ЛИ GOOGLE CALENDAR
+// ==================================================
 
 function needsCalendar(message) {
   const text = message.toLowerCase();
 
-  return /запис|записаться|запиши|приём|прием|стоматолог|врач|лечение|чистк|удалени|пломб|свободн|окн|врем|дата|перенес|перенести|отмен|отменить|календар|запись|приём|прием/i.test(
+  return /запис|записаться|запиши|приём|прием|стоматолог|врач|лечение|чистк|удалени|пломб|свободн|окн|врем|дата|перенес|перенести|отмен|отменить|календар|запись/i.test(
     text
   );
 }
 
-// ===============================
-// Chat API
-// ===============================
+// ==================================================
+// CHAT
+// ==================================================
 
 app.post("/api/chat", async (req, res) => {
   try {
@@ -111,6 +119,11 @@ app.post("/api/chat", async (req, res) => {
       });
     }
 
+    console.log(
+      "USER MESSAGE:",
+      message
+    );
+
     const request = {
       model: "gpt-5.6-luna",
 
@@ -120,54 +133,97 @@ app.post("/api/chat", async (req, res) => {
 
       input: message,
 
-      max_output_tokens: 700,
+      // Ограничиваем ответ
+      max_output_tokens: 400,
 
+      // Минимальное reasoning
       reasoning: {
         effort: "low",
       },
 
+      // Короткие ответы
       text: {
         verbosity: "low",
       },
 
-      prompt_cache_key: "dantist-ai-clinic",
+      // Помогает повторно использовать одинаковый prompt
+      prompt_cache_key:
+        "dantist-ai-clinic",
 
-      max_tool_calls: 3,
+      // Не разрешаем длинную цепочку инструментов
+      max_tool_calls: 1,
     };
 
-    // Google Calendar подключаем только когда он нужен
+    // ==================================================
+    // GOOGLE CALENDAR
+    // ==================================================
+
     if (needsCalendar(message)) {
+      console.log(
+        "CALENDAR: connecting Google Calendar"
+      );
+
       const googleAccessToken =
         await getGoogleAccessToken();
 
       request.tools = [
         {
           type: "mcp",
-          server_label: "google_calendar",
-          connector_id: "connector_googlecalendar",
 
-          authorization: googleAccessToken,
+          server_label:
+            "google_calendar",
 
-          require_approval: "never",
+          connector_id:
+            "connector_googlecalendar",
+
+          authorization:
+            googleAccessToken,
+
+          require_approval:
+            "never",
         },
       ];
     }
 
-    // Продолжаем предыдущий диалог
-    if (req.body?.previous_response_id) {
-      request.previous_response_id =
-        String(req.body.previous_response_id);
-    }
+    // ==================================================
+    // ВАЖНО:
+    // НЕ ПЕРЕДАЁМ previous_response_id
+    //
+    // Каждый запрос теперь независимый.
+    // Это временно
+
+
+лано специально,
+    // чтобы исключить накопление истории.
+    // ==================================================
 
     const response =
-      await openai.responses.create(request);
+      await openai.responses.create(
+        request
+      );
 
-    res.json({
+    // ==================================================
+    // ЛОГИРУЕМ РАСХОД ТОКЕНОВ
+    // ==================================================
+
+    console.log(
+      "OPENAI USAGE:",
+      response.usage || "usage unavailable"
+    );
+
+    console.log(
+      "OPENAI RESPONSE:",
+      response.id
+    );
+
+    // ==================================================
+    // ОТВЕТ КЛИЕНТУ
+    // ==================================================
+
+    return res.json({
       reply:
         response.output_text ||
         "Извините, не удалось сформировать ответ.",
-
-      response_id: response.id,
     });
 
   } catch (error) {
@@ -186,16 +242,16 @@ app.post("/api/chat", async (req, res) => {
       });
     }
 
-    res.status(500).json({
+    return res.status(500).json({
       reply:
-        "Произошла ошибка на сервере. Попробуйте ещё раз.",
+        "Произошла ошибка сервера. Попробуйте ещё раз.",
     });
   }
 });
 
-// ===============================
-// Health check
-// ===============================
+// ==================================================
+// HEALTH CHECK
+// ==================================================
 
 app.get("/health", (req, res) => {
   res.json({
@@ -204,8 +260,12 @@ app.get("/health", (req, res) => {
   });
 });
 
+// ==================================================
+// START
+// ==================================================
+
 app.listen(port, () => {
   console.log(
     `Дантист запущен на порту ${port}`
   );
-});
+}); сде
