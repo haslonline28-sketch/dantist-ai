@@ -1,6 +1,5 @@
 import express from "express";
 import OpenAI from "openai";
-import crypto from "crypto";
 
 const app = express();
 const port = process.env.PORT || 3000;
@@ -9,6 +8,7 @@ const openai = new OpenAI({
   apiKey: process.env.OPENAI_API_KEY,
 });
 
+// ТЕКУЩИЙ PROMPT
 const PROMPT_ID =
   "pmpt_6ab1354ce890819391882dd3f4f9426e0328cf7d87380238";
 
@@ -18,47 +18,10 @@ app.use(express.static("."));
 let googleAccessToken = null;
 let googleAccessTokenExpiresAt = 0;
 
-/*
-  Простое хранение истории диалогов.
-
-  Каждый посетитель получает свой session ID через cookie.
-  История хранится в памяти Render.
-*/
-const sessions = new Map();
+// История одного демонстрационного диалога
+let conversationHistory = [];
 
 const MAX_HISTORY_MESSAGES = 20;
-
-function getSessionId(req, res) {
-  const cookies = req.headers.cookie || "";
-
-  const match = cookies.match(
-    /(?:^|;\s*)dantist_session=([^;]+)/
-  );
-
-  if (match && match[1]) {
-    return match[1];
-  }
-
-  const sessionId = crypto.randomUUID();
-
-  res.setHeader(
-    "Set-Cookie",
-    `dantist_session=${sessionId}; Path=/; HttpOnly; SameSite=Lax`
-  );
-
-  return sessionId;
-}
-
-function getSession(sessionId) {
-  if (!sessions.has(sessionId)) {
-    sessions.set(sessionId, {
-      history: [],
-      calendarActive: false,
-    });
-  }
-
-  return sessions.get(sessionId);
-}
 
 async function getGoogleAccessToken() {
   const now = Date.now();
@@ -105,7 +68,10 @@ async function getGoogleAccessToken() {
   const data = await response.json();
 
   if (!response.ok || !data.access_token) {
-    console.error("GOOGLE TOKEN ERROR:", data);
+    console.error(
+      "GOOGLE TOKEN ERROR:",
+      data
+    );
 
     throw new Error(
       "Failed to refresh Google OAuth token"
@@ -145,44 +111,38 @@ app.post("/api/chat", async (req, res) => {
       });
     }
 
-    const sessionId = getSessionId(req, res);
-    const session = getSession(sessionId);
-
-    console.log("USER MESSAGE:", message);
     console.log(
-      "SESSION:",
-      sessionId
+      "USER MESSAGE:",
+      message
     );
 
     /*
-      Если разговор уже связан с записью,
-      продолжаем использовать Google Calendar
-      даже если пользователь написал просто "9:00".
+      Добавляем сообщение пользователя
+      в историю текущего демонстрационного диалога.
     */
-    if (needsCalendar(message)) {
-      session.calendarActive = true;
-    }
-
-    /*
-      Добавляем сообщение пациента в историю.
-    */
-    session.history.push({
+    conversationHistory.push({
       role: "user",
       content: message,
     });
 
-    /*
-      Ограничиваем историю, чтобы запросы
-      не становились слишком большими.
-    */
     if (
-      session.history.length >
+      conversationHistory.length >
       MAX_HISTORY_MESSAGES
     ) {
-      session.history =
-        session.history.slice(
+      conversationHistory =
+        conversationHistory.slice(
           -MAX_HISTORY_MESSAGES
         );
+    }
+
+    /*
+      Подключаем Google Calendar для всех
+      сообщений, связанных с записью.
+    */
+    if (needsCalendar(message)) {
+      console.log(
+        "CALENDAR: connecting Google Calendar"
+      );
     }
 
     const request = {
@@ -192,9 +152,13 @@ app.post("/api/chat", async (req, res) => {
         id: PROMPT_ID,
       },
 
-      input: session.history,
+      /*
+        Передаём всю историю, а не только последнее
+        сообщение.
+      */
+      input: conversationHistory,
 
-      max_output_tokens: 400,
+      max_output_tokens: 500,
 
       reasoning: {
         effort: "low",
@@ -207,18 +171,28 @@ app.post("/api/chat", async (req, res) => {
       prompt_cache_key:
         "dantist-ai-clinic",
 
-      max_tool_calls: 1,
+      /*
+        Разрешаем модели использовать MCP.
+      */
+      max_tool_calls: 5,
     };
 
     /*
-      Если пользователь находится в сценарии записи,
-      подключаем Google Calendar.
+      Google Calendar подключаем, если сообщение
+      относится к записи или если в истории уже
+      идёт сценарий записи.
     */
-    if (session.calendarActive) {
-      console.log(
-        "CALENDAR: connecting Google Calendar"
-      );
+    const historyText =
+      conversationHistory
+        .map((item) =>
+          String(item.content || "")
+        )
+        .join(" ");
 
+    if (
+      needsCalendar(message) ||
+      needsCalendar(historyText)
+    ) {
       const accessToken =
         await getGoogleAccessToken();
 
@@ -232,6 +206,10 @@ app.post("/api/chat", async (req, res) => {
           require_approval: "never",
         },
       ];
+
+      console.log(
+        "CALENDAR: MCP tool enabled"
+      );
     }
 
     const response =
@@ -239,7 +217,8 @@ app.post("/api/chat", async (req, res) => {
 
     console.log(
       "OPENAI USAGE:",
-      response.usage || "usage unavailable"
+      response.usage ||
+        "usage unavailable"
     );
 
     console.log(
@@ -247,25 +226,25 @@ app.post("/api/chat", async (req, res) => {
       response.id
     );
 
+    /*
+      Важно:
+      сохраняем именно ответ модели в историю.
+    */
     const reply =
       response.output_text ||
       "Извините, не удалось сформировать ответ.";
 
-    /*
-      Сохраняем ответ ассистента в историю,
-      чтобы следующий вопрос видел контекст.
-    */
-    session.history.push({
+    conversationHistory.push({
       role: "assistant",
       content: reply,
     });
 
     if (
-      session.history.length >
+      conversationHistory.length >
       MAX_HISTORY_MESSAGES
     ) {
-      session.history =
-        session.history.slice(
+      conversationHistory =
+        conversationHistory.slice(
           -MAX_HISTORY_MESSAGES
         );
     }
