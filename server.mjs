@@ -1,5 +1,6 @@
 import express from "express";
 import OpenAI from "openai";
+import { google } from "googleapis";
 
 const app = express();
 const port = process.env.PORT || 3000;
@@ -8,25 +9,20 @@ const openai = new OpenAI({
   apiKey: process.env.OPENAI_API_KEY,
 });
 
-// ТЕКУЩИЙ PROMPT
 const PROMPT_ID =
   "pmpt_6ab1354ce890819391882dd3f4f9426e0328cf7d87380238";
 
 app.use(express.json());
 app.use(express.static("."));
 
-// Google OAuth
 let googleAccessToken = null;
 let googleAccessTokenExpiresAt = 0;
 
-// История демонстрационного диалога
 let conversationHistory = [];
-
 const MAX_HISTORY_MESSAGES = 20;
 
-
 // ===============================
-// GOOGLE ACCESS TOKEN
+// GOOGLE OAUTH
 // ===============================
 
 async function getGoogleAccessToken() {
@@ -39,31 +35,22 @@ async function getGoogleAccessToken() {
     return googleAccessToken;
   }
 
-  const refreshToken =
-    process.env.GOOGLE_CALENDAR_REFRESH_TOKEN;
-
-  const clientId =
-    process.env.GOOGLE_OAUTH_CLIENT_ID;
-
-  const clientSecret =
-    process.env.GOOGLE_OAUTH_CLIENT_SECRET;
+  const refreshToken = process.env.GOOGLE_CALENDAR_REFRESH_TOKEN;
+  const clientId = process.env.GOOGLE_OAUTH_CLIENT_ID;
+  const clientSecret = process.env.GOOGLE_OAUTH_CLIENT_SECRET;
 
   if (!refreshToken || !clientId || !clientSecret) {
-    throw new Error(
-      "Google OAuth environment variables are missing"
-    );
+    throw new Error("Google OAuth environment variables are missing");
   }
 
   const response = await fetch(
     "https://oauth2.googleapis.com/token",
     {
       method: "POST",
-
       headers: {
         "Content-Type":
           "application/x-www-form-urlencoded",
       },
-
       body: new URLSearchParams({
         client_id: clientId,
         client_secret: clientSecret,
@@ -76,11 +63,7 @@ async function getGoogleAccessToken() {
   const data = await response.json();
 
   if (!response.ok || !data.access_token) {
-    console.error(
-      "GOOGLE TOKEN ERROR:",
-      data
-    );
-
+    console.error("GOOGLE TOKEN ERROR:", data);
     throw new Error(
       "Failed to refresh Google OAuth token"
     );
@@ -101,17 +84,241 @@ async function getGoogleAccessToken() {
   return googleAccessToken;
 }
 
-
 // ===============================
-// ПРОВЕРКА: НУЖЕН ЛИ КАЛЕНДАРЬ
+// GOOGLE CALENDAR CLIENT
 // ===============================
 
-function needsCalendar(message) {
-  return /запис|записаться|запиши|приём|прием|стоматолог|врач|лечение|чистк|удалени|пломб|свободн|окн|врем|дата|перенес|перенести|отмен|отменить|календар|запись|\b\d{1,2}[:.]\d{2}\b/i.test(
-    message.toLowerCase()
+async function getCalendarClient() {
+  const accessToken =
+    await getGoogleAccessToken();
+
+  const auth = new google.auth.OAuth2(
+    process.env.GOOGLE_OAUTH_CLIENT_ID,
+    process.env.GOOGLE_OAUTH_CLIENT_SECRET
   );
+
+  auth.setCredentials({
+    access_token: accessToken,
+  });
+
+  return google.calendar({
+    version: "v3",
+    auth,
+  });
 }
 
+// ===============================
+// LIST EVENTS
+// ===============================
+
+async function listCalendarEvents({
+  date,
+  startHour = 8,
+  endHour = 18,
+}) {
+  const calendar =
+    await getCalendarClient();
+
+  const timeMin =
+    `${date}T${String(startHour).padStart(
+      2,
+      "0"
+    )}:00:00+02:00`;
+
+  const timeMax =
+    `${date}T${String(endHour).padStart(
+      2,
+      "0"
+    )}:00:00+02:00`;
+
+  const result =
+    await calendar.events.list({
+      calendarId: "primary",
+      timeMin,
+      timeMax,
+      singleEvents: true,
+      orderBy: "startTime",
+    });
+
+  return result.data.items || [];
+}
+
+// ===============================
+// CREATE EVENT
+// ===============================
+
+async function createCalendarEvent({
+  name,
+  service,
+  date,
+  time,
+}) {
+  const calendar =
+    await getCalendarClient();
+
+  const startDateTime =
+    `${date}T${time}:00+02:00`;
+
+  const [hour, minute] =
+    time.split(":").map(Number);
+
+  const endHour = hour + 1;
+
+  const endDateTime =
+    `${date}T${String(endHour).padStart(
+      2,
+      "0"
+    )}:${String(minute).padStart(
+      2,
+      "0"
+    )}:00+02:00`;
+
+  const event = {
+    summary:
+      `Дантист — ${service} — ${name}`,
+
+    description:
+      `Пациент: ${name}\nУслуга: ${service}`,
+
+    start: {
+      dateTime: startDateTime,
+      timeZone: "Europe/Warsaw",
+    },
+
+    end: {
+      dateTime: endDateTime,
+      timeZone: "Europe/Warsaw",
+    },
+  };
+
+  const result =
+    await calendar.events.insert({
+      calendarId: "primary",
+      requestBody: event,
+    });
+
+  console.log(
+    "CALENDAR EVENT CREATED:",
+    result.data.id
+  );
+
+  return result.data;
+}
+
+// ===============================
+// CALENDAR TOOLS FOR OPENAI
+// ===============================
+
+const calendarTools = [
+  {
+    type: "function",
+    name: "check_calendar",
+    description:
+      "Проверяет занятость Google Calendar клиники на указанную дату и возвращает существующие записи.",
+    parameters: {
+      type: "object",
+      properties: {
+        date: {
+          type: "string",
+          description:
+            "Дата в формате YYYY-MM-DD",
+        },
+      },
+      required: ["date"],
+      additionalProperties: false,
+    },
+    strict: true,
+  },
+
+  {
+    type: "function",
+    name: "book_patient",
+    description:
+      "Создаёт запись пациента непосредственно в Google Calendar клиники. Использовать только когда пациент подтвердил конкретную дату и время.",
+    parameters: {
+      type: "object",
+      properties: {
+        name: {
+          type: "string",
+          description: "Имя пациента",
+        },
+        service: {
+          type: "string",
+          description:
+            "Услуга стоматологии",
+        },
+        date: {
+          type: "string",
+          description:
+            "Дата в формате YYYY-MM-DD",
+        },
+        time: {
+          type: "string",
+          description:
+            "Время в формате HH:MM",
+        },
+      },
+      required: [
+        "name",
+        "service",
+        "date",
+        "time",
+      ],
+      additionalProperties: false,
+    },
+    strict: true,
+  },
+];
+
+// ===============================
+// EXECUTE CALENDAR TOOL
+// ===============================
+
+async function executeCalendarTool(
+  name,
+  args
+) {
+  if (name === "check_calendar") {
+    const events =
+      await listCalendarEvents({
+        date: args.date,
+      });
+
+    return {
+      success: true,
+      date: args.date,
+      events: events.map((event) => ({
+        id: event.id,
+        summary: event.summary || "",
+        start:
+          event.start?.dateTime ||
+          event.start?.date ||
+          null,
+        end:
+          event.end?.dateTime ||
+          event.end?.date ||
+          null,
+      })),
+    };
+  }
+
+  if (name === "book_patient") {
+    const event =
+      await createCalendarEvent(args);
+
+    return {
+      success: true,
+      eventId: event.id,
+      htmlLink: event.htmlLink || null,
+      message:
+        "Запись успешно создана в Google Calendar.",
+    };
+  }
+
+  throw new Error(
+    `Unknown calendar tool: ${name}`
+  );
+}
 
 // ===============================
 // CHAT
@@ -130,12 +337,10 @@ app.post("/api/chat", async (req, res) => {
     }
 
     console.log("");
-    console.log("=================================");
+    console.log("===============================");
     console.log("USER MESSAGE:", message);
-    console.log("=================================");
+    console.log("===============================");
 
-
-    // Добавляем сообщение пользователя
     conversationHistory.push({
       role: "user",
       content: message,
@@ -151,143 +356,156 @@ app.post("/api/chat", async (req, res) => {
         );
     }
 
+    let response =
+      await openai.responses.create({
+        model: "gpt-5.6-luna",
 
-    // ===============================
-    // REQUEST OPENAI
-    // ===============================
-
-    const request = {
-      model: "gpt-5.6-luna",
-
-      prompt: {
-        id: PROMPT_ID,
-      },
-
-      input: conversationHistory,
-
-      max_output_tokens: 500,
-
-      reasoning: {
-        effort: "low",
-      },
-
-      text: {
-        verbosity: "low",
-      },
-
-      prompt_cache_key:
-        "dantist-ai-clinic",
-
-      max_tool_calls: 5,
-    };
-
-
-    // Собираем весь текущий диалог
-    // для определения необходимости календаря
-
-    const historyText =
-      conversationHistory
-        .map((item) =>
-          String(item.content || "")
-        )
-        .join(" ");
-
-
-    // ===============================
-    // GOOGLE CALENDAR MCP
-    // ===============================
-
-    if (
-      needsCalendar(message) ||
-      needsCalendar(historyText)
-    ) {
-      console.log(
-        "CALENDAR: connecting Google Calendar"
-      );
-
-      const accessToken =
-        await getGoogleAccessToken();
-
-      request.tools = [
-        {
-          type: "mcp",
-
-          server_label:
-            "google_calendar",
-
-          connector_id:
-            "connector_googlecalendar",
-
-          authorization:
-            accessToken,
-
-          require_approval:
-            "never",
+        prompt: {
+          id: PROMPT_ID,
         },
-      ];
 
-      console.log(
-        "CALENDAR: MCP tool enabled"
-      );
+        input: conversationHistory,
+
+        tools: calendarTools,
+
+        max_output_tokens: 500,
+
+        reasoning: {
+          effort: "low",
+        },
+
+        text: {
+          verbosity: "low",
+        },
+
+        prompt_cache_key:
+          "dantist-ai-clinic",
+
+        tool_choice: "auto",
+      });
+
+    // OpenAI может попросить выполнить
+    // одну или несколько функций.
+    while (true) {
+      const functionCalls =
+        response.output.filter(
+          (item) =>
+            item.type ===
+            "function_call"
+        );
+
+      if (
+        functionCalls.length === 0
+      ) {
+        break;
+      }
+
+      const toolOutputs = [];
+
+      for (const call of functionCalls) {
+        console.log(
+          "OPENAI TOOL:",
+          call.name
+        );
+
+        console.log(
+          "TOOL ARGUMENTS:",
+          call.arguments
+        );
+
+        try {
+          const args =
+            JSON.parse(call.arguments);
+
+          const result =
+            await executeCalendarTool(
+              call.name,
+              args
+            );
+
+          console.log(
+            "CALENDAR RESULT:",
+            JSON.stringify(
+              result,
+              null,
+              2
+            )
+          );
+
+          toolOutputs.push({
+            type:
+              "function_call_output",
+
+            call_id:
+              call.call_id,
+
+            output:
+              JSON.stringify(result),
+          });
+        } catch (toolError) {
+          console.error(
+            "CALENDAR TOOL ERROR:",
+            toolError
+          );
+
+          toolOutputs.push({
+            type:
+              "function_call_output",
+
+            call_id:
+              call.call_id,
+
+            output: JSON.stringify({
+              success: false,
+              error:
+                toolError.message,
+            }),
+          });
+        }
+      }
+
+      response =
+        await openai.responses.create({
+          model: "gpt-5.6-luna",
+
+          prompt: {
+            id: PROMPT_ID,
+          },
+
+          input: [
+            ...conversationHistory,
+            ...response.output,
+            ...toolOutputs,
+          ],
+
+          tools: calendarTools,
+
+          max_output_tokens: 500,
+
+          reasoning: {
+            effort: "low",
+          },
+
+          text: {
+            verbosity: "low",
+          },
+
+          prompt_cache_key:
+            "dantist-ai-clinic",
+
+          tool_choice: "auto",
+        });
     }
-
-
-    // ===============================
-    // OPENAI REQUEST
-    // ===============================
-
-    const response =
-      await openai.responses.create(
-        request
-      );
-
-
-    // ===============================
-    // DIAGNOSTICS
-    // ===============================
-
-    console.log(
-      "OPENAI USAGE:",
-      response.usage ||
-        "usage unavailable"
-    );
-
-    console.log(
-      "OPENAI RESPONSE ID:",
-      response.id
-    );
-
-
-    // ВАЖНО:
-    // Показываем весь output OpenAI,
-    // чтобы увидеть вызов MCP/create_event.
-
-    console.log(
-      "OPENAI OUTPUT:",
-      JSON.stringify(
-        response.output,
-        null,
-        2
-      )
-    );
-
-
-    // ===============================
-    // RESPONSE TEXT
-    // ===============================
 
     const reply =
       response.output_text ||
       "Извините, не удалось сформировать ответ.";
-
 
     console.log(
       "ASSISTANT REPLY:",
       reply
     );
 
-
-    // Сохраняем ответ ассистента
     conversationHistory.push({
       role: "assistant",
       content: reply,
@@ -303,59 +521,42 @@ app.post("/api/chat", async (req, res) => {
         );
     }
 
-
     return res.json({
       reply,
     });
-
   } catch (error) {
-
     console.error(
-      "OPENAI/MCP ERROR:",
+      "OPENAI/CALENDAR ERROR:",
       error
     );
-
 
     if (error?.status === 429) {
       return res.status(429).json({
         reply:
-          "Сервис временно перегружен. Попробуйте ещё раз немного позже.",
+          "Сервис временно недоступен из-за ограничения OpenAI API.",
       });
     }
 
-
     return res.status(500).json({
       reply:
-        "Произошла ошибка сервера. Попробуйте ещё раз.",
+        "Произошла ошибка сервера. Проверьте настройки OpenAI и Google Calendar.",
     });
   }
 });
 
-
 // ===============================
-// HEALTH CHECK
-// ===============================
-
-app.get(
-  "/health",
-  (req, res) => {
-    res.json({
-      status: "ok",
-      service: "dantist-ai",
-    });
-  }
-);
-
-
-// ===============================
-// START SERVER
+// HEALTH
 // ===============================
 
-app.listen(
-  port,
-  () => {
-    console.log(
-      `Дантист запущен на порту ${port}`
-    );
-  }
-);
+app.get("/health", (req, res) => {
+  res.json({
+    status: "ok",
+    service: "dantist-ai",
+  });
+});
+
+app.listen(port, () => {
+  console.log(
+    `Дантист запущен на порту ${port}`
+  );
+});
